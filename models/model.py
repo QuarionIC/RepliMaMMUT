@@ -109,7 +109,7 @@ class MaMMUT(nn.Module):
     
     def contrastive_text_features(self, text: torch.Tensor):
         # text has shape N x S
-        # Remember to pass bidirectional mask (as far as I understand, a mask that allows attention to all non-padded areas and maybe stops cls from attending to padding TODO: Clarify)
+        # Remember to pass bidirectional mask (as far as I understand, a mask that allows attention to all non-padded areas or maybe just all non-CLS areas and maybe stops cls from attending to padding TODO: Clarify)
         # Remember to perform residual additions
         pass
     
