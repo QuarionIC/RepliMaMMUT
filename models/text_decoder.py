@@ -1,0 +1,65 @@
+import torch
+import torch.nn as nn
+
+class TextDecoderLayer(nn.Module):
+    def __init__(self, 
+                d_model, 
+                num_heads_mha, 
+                num_heads_cross_attn, 
+                d_feedforward, 
+                d_k,
+                d_v)
+        super(TextDecoderLayer).__init__()
+
+        self.k = nn.Linear(d_model, d_k)
+        self.q = nn.Linear(d_model, d_k)
+        self.v = nn.Linear(d_model, d_v)
+
+        self.MHA_1 = nn.MultiheadAttention(d_model, num_heads, kdim=d_k, vdim=d_v)
+        self.layer_norm1 = nn.LayerNorm()
+
+        self.k_cross_attn = nn.Linear(d_model, d_k)
+        self.q_cross_attn = nn.Linear(d_model, d_k)
+        self.v_cross_attn = nn.Linear(d_model, d_v)
+
+        self.cross_attn = nn.MultiheadAttention(d_model, num_heads_cross_attn, kdim=d_k, vdim=d_v)
+        self.layer_norm_cross_attn = nn.LayerNorm()
+
+        self.fc1 = nn.Linear(d_model, d_feedforward)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(d_feedforward, d_model)
+        self.layer_norm_ff = nn.LayerNorm()
+
+    def forward(self, x, vision_features=None, enable_cross_attn=True, causal_mask=False, padding_mask=None):
+        """Forward method for decoder layer with added option to disable cross attention and causal masking"""
+        k1 = self.k(x)
+        q1 = self.q(x)
+        v1 = self.v(x)
+
+        out = self.MHA_1(q1, k1, v1, is_causal=causal_mask, key_padding_mask=padding_mask)
+        out = self.layer_norm1(out + x)
+        out_layer_norm1 = torch.clone(out)
+
+        if enable_cross_attn:
+            k2 = self.k_cross_attn(vision_features)
+            q2 = self.q_cross_attn(x)
+            v2 = self.v_cross_attn(vision_features)
+            out = self.cross_attn(q2, k2, v2, is_causal=causal_mask, key_padding_mask=padding_mask)
+            out = self.layer_norm_cross_attn(out + out_layer_norm1)
+            out_layer_norm_cross_attn = torch.clone(out)
+        
+        out = self.fc2(self.relu(self.fc1(out)))
+        if enable_cross_attn:
+            out = self.layer_norm_ff(out + out_layer_norm_cross_attn)
+        else:
+            out = self.layer_norm_ff(out + out_layer_norm1)
+
+        return out
+
+
+
+
+
+
+
+

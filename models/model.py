@@ -3,6 +3,7 @@ import torch.nn as nn
 from PIL import Image as PIL_Image
 from torchvision.models.vision_transformer import VisionTransformer
 from torchvision.transforms import v2
+from text_decoder import TextDecoderLayer
 
 class MaMMUT(nn.Module):
     def __init__(self,
@@ -18,7 +19,9 @@ class MaMMUT(nn.Module):
                  generative_loss_weight: float = 1.0,
                  text_decoder_depth: int = 6,
                  text_decoder_embed_dim: int = 512,
-                 text_decoder_sub_layer_heads: int = 8):
+                 text_decoder_sub_layer_heads: int = 8,
+                 text_decoder_feedforward_dim: int = 2048
+                 text_decoder_dk: int = 128):
         self.vit = VisionTransformer(
             image_size=image_size,
             patch_size=patch_size,
@@ -44,25 +47,32 @@ class MaMMUT(nn.Module):
 
         self.pos_embedding = nn.Embedding(num_embeddings=(image_size // patch_size)**2, embedding_dim=vit_hidden_dim)
         
-        for i in range(text_decoder_depth):
+        # for i in range(text_decoder_depth):
             # Layer norm before MHA from https://arxiv.org/abs/2002.04745
             
-            if (i % 2 == 0): # Note that cross attention layer occurs every 2 layers to sastisfy M/N ~= 2 from paper
-                self.text_decoder_layers.append([ # Figure out params
-                    nn.LayerNorm(),
-                    nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
-                    nn.LayerNorm(),
-                    nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True), # The cross attention layer that accepts image features
-                    nn.LayerNorm(),
-                    nn.Linear()
-                ])
-            else:
-                self.text_decoder_layers.append([ # Figure out params
-                    nn.LayerNorm(),
-                    nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
-                    nn.LayerNorm(),
-                    nn.Linear(self.text_decoder_embed_dim, self.text_decoder_embed_dim, batch_first = True)
-                ])
+            # if (i % 2 == 0): # Note that cross attention layer occurs every 2 layers to sastisfy M/N ~= 2 from paper
+            #     self.text_decoder_layers.append([ # Figure out params
+            #         nn.LayerNorm(),
+            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
+            #         nn.LayerNorm(),
+            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True), # The cross attention layer that accepts image features
+            #         nn.LayerNorm(),
+            #         nn.Linear()
+            #     ])
+            # else:
+            #     self.text_decoder_layers.append([ # Figure out params
+            #         nn.LayerNorm(),
+            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
+            #         nn.LayerNorm(),
+            #         nn.Linear(self.text_decoder_embed_dim, self.text_decoder_embed_dim, batch_first = True)
+            #     ])
+        
+        # Changing logic for the decoder layer. This way we can disable cross-attention during the forward pass and keep everything else the same
+        for i in range(text_decoder_depth):
+            self.text_decoder_layers.append(TextDecoderLayer(d_model=text_decoder_embed_dim, num_heads_mha=text_decoder_sub_layer_heads, /
+                                                            num_heads_cross_attn=text_decoder_sub_layer_heads, d_feedforward=text_decoder_feedforward_dim, /
+                                                             d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // num_heads))
+                                                             )
         
         self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size)
             
@@ -140,7 +150,16 @@ class MaMMUT(nn.Module):
     def generative_text_features(self, text: torch.tensor, vision_features: torch.tensor):
         # Remember to toggle causal in forward pass
         # Remember to perform residual additions
-        pass
+        output = text.clone()
+        for i, layer in enumerate(self.text_decoder_layers):
+            # Disable cross-attention for odd numbered layers
+            if i % 2 != 0:
+                output = layer(output, vision_features=None, enable_cross_attn=False, causal_mask=True)
+            else:
+                # enable cross-attention for even numbered layers
+                output = layer(output, vision_features=vision_features, enable_cross_attn=True, causal_mask=True)
+        return output
+
     
     def contrastive_loss(self, vision_features: torch.tensor, constrastive_text_features: torch.tensor):
         pass
