@@ -41,6 +41,8 @@ class MaMMUT(nn.Module):
         
         self.text_decoder_depth = text_decoder_depth
         self.text_decoder_layers = []
+
+        self.pos_embedding = nn.Embedding(num_embeddings=(image_size // patch_size)**2, embedding_dim=vit_hidden_dim)
         
         for i in range(text_decoder_depth):
             # Layer norm before MHA from https://arxiv.org/abs/2002.04745
@@ -65,8 +67,31 @@ class MaMMUT(nn.Module):
         self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size)
             
             
-            
-        
+    def cropped_positional_encoding(self, feats):
+        # feats shape: N x Hidden x H_p x W_p
+        n, hidden, h, w = feats.shape
+        # Reshape to N x Hidden x (H_p x W_p) 
+        feats = feats.reshape(n, hidden, h * w)
+        # Change shape to N x (H_p x W_p) x Hidden
+        feats = feats.permute(0, -1, 1)
+
+        # pos_embedding shape: N x (H_p x W_p) x Hidden
+        pos_embeddings = self.pos_embedding(feats)
+        # convert shape back to N x Hidden x H_p x W_p to upsample
+        pos_embeddings = pos_embeddings.reshape(n, h, w, hidden).permute(0, -1, 1, 2)
+
+        # Upsample using bilinear interpolation
+        upsample_layer = nn.Upsample(mode='bilinear', scale=4, size=(pos_embedding.shape[2], pos_embedding.shape[3]))
+        upsampled_pos_embeddings = upsample_layer(pos_embeddings)
+
+        random_crop = v2.RandomCrop(pos_embedding.shape[2])
+        cropped_pos_encoding = random_crop(upsampled_pos_embeddings)
+
+        # cropped_pos_encoding shape: N x Hidden x H_p x W_p. Reshape to align with feats
+        cropped_pos_encoding = cropped_pos_encoding.reshape(n, hidden, h*w)
+
+        return feats + cropped_pos_encoding
+
         
     def get_vision_features(self, image: torch.tensor):
         # image has shape N x C x H x W where
@@ -85,16 +110,15 @@ class MaMMUT(nn.Module):
 
         # Add batch dimension - for testing on one image, remove for training
         img = img.unsqueeze(0)
-
+        # (n, c, h, w) -> (n, hidden_dim, n_h, n_w), converts into patches
         feats = self.vit._process_input(img)
 
         # Expand the CLS token to the full batch
         batch_class_token = self.vit.class_token.expand(img.shape[0], -1, -1)
         feats = torch.cat([batch_class_token, feats], dim=1)
         
-        # TODO: Figure out how to adopt Cropped Positional Embedding (upsampling positional embeddings from pretraining
-        # image size of 224 to detection time image size (ask Jason) then use a randomly cropped and resized
-        # region from up-sized position embedding as image-level positional embedding during pretraining
+        feats = self.cropped_positional_encoding(feats)
+
         feats = self.vit.encoder(feats)
 
         # Fetch pre-prended CLS token at position 0 in dimension 1
