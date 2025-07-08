@@ -20,8 +20,10 @@ class MaMMUT(nn.Module):
                  text_decoder_depth: int = 6,
                  text_decoder_embed_dim: int = 512,
                  text_decoder_sub_layer_heads: int = 8,
-                 text_decoder_feedforward_dim: int = 2048
-                 text_decoder_dk: int = 128):
+                 text_decoder_feedforward_dim: int = 2048,
+                 text_decoder_dk: int = 128,
+                 vocab_size: int = 1000,
+                 latent_dim: int = 512):
         self.vit = VisionTransformer(
             image_size=image_size,
             patch_size=patch_size,
@@ -34,6 +36,7 @@ class MaMMUT(nn.Module):
             num_classes=1000
         )
         
+        self.token_size = vocab_size
         self.text_decoder_embed_dim = text_decoder_embed_dim
         self.text_decoder_sub_layer_heads = text_decoder_sub_layer_heads
         
@@ -47,25 +50,17 @@ class MaMMUT(nn.Module):
 
         self.pos_embedding = nn.Embedding(num_embeddings=(image_size // patch_size)**2, embedding_dim=vit_hidden_dim)
         
-        # for i in range(text_decoder_depth):
-            # Layer norm before MHA from https://arxiv.org/abs/2002.04745
-            
-            # if (i % 2 == 0): # Note that cross attention layer occurs every 2 layers to sastisfy M/N ~= 2 from paper
-            #     self.text_decoder_layers.append([ # Figure out params
-            #         nn.LayerNorm(),
-            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
-            #         nn.LayerNorm(),
-            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True), # The cross attention layer that accepts image features
-            #         nn.LayerNorm(),
-            #         nn.Linear()
-            #     ])
-            # else:
-            #     self.text_decoder_layers.append([ # Figure out params
-            #         nn.LayerNorm(),
-            #         nn.MultiheadAttention(self.text_decoder_embed_dim, self.text_decoder_sub_layer_heads, batch_first = True),
-            #         nn.LayerNorm(),
-            #         nn.Linear(self.text_decoder_embed_dim, self.text_decoder_embed_dim, batch_first = True)
-            #     ])
+        self.final_layernorm = nn.LayerNorm()
+
+        self.latent_text_features = nn.Linear(text_decoder_embed_dim, text_decoder_embed_dim) # for contrastive loss
+        self.pad_token_id = 0 # we can set this in the SentencePiece tokenizer
+
+        self.text_embeddings = nn.Embedding(num_embeddings=vocab_size, embedding_dim=text_decoder_embed_dim, padding_idx=self.pad_token_id)
+
+        self.text_cls_token = nn.Parameter(torch.randn(text_decoder_embed_dim))
+        self.contrastive_layernorm = nn.LayerNorm(text_decoder_embed_dim)
+
+        self.gen_loss_criterion = nn.CrossEntropyLoss()
         
         # Changing logic for the decoder layer. This way we can disable cross-attention during the forward pass and keep everything else the same
         for i in range(text_decoder_depth):
@@ -74,7 +69,7 @@ class MaMMUT(nn.Module):
                                                              d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // num_heads))
                                                              )
         
-        self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size)
+        self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size) # for captioning loss
             
             
     def cropped_positional_encoding(self, feats):
@@ -141,53 +136,70 @@ class MaMMUT(nn.Module):
     def img_feat_size_to_txt_feat_size(self, vision_features: torch.tensor):
         return self.ifs2tfs(vision_features)
     
-    def contrastive_text_features(self, text: torch.Tensor):
+    def contrastive_text_features(self, text_embeds: torch.Tensor):
         # text has shape N x S
         # Remember to pass bidirectional mask (as far as I understand, a mask that allows attention to all non-padded areas or maybe just all non-CLS areas and maybe stops cls from attending to padding TODO: Clarify)
-        # Remember to perform residual additions
-        pass
+        # Remember to perform residual additions         
+        # expand to match dimensions
+        cls_tokens = self.cls_token.expand(text.embeds.shape[0], 1, self.text_decoder_embed_dim)
+        # Add cls tokens to start of the sequences
+        text_embeds = torch.cat([cls_tokens, text_embeds], dim=1)
+        cls_padding_mask = (text_embeds == 0).all(dim=-1) # From nn.Embedding, padding tokens are embedded as vector of 0s. Result should be shape N x S.
+
+        output = text_embeds.clone()
+        for i, layer in enumerate(self.text_decoder_layers):
+            # Disable cross-attention for contrastive features
+            output = layer(output, vision_features=vision_features, enable_cross_attn=True, padding_mask=cls_padding_mask)
+
+        output = output[:, 0]
+        output = self.contrastive_layernorm(output)
+        return output
     
-    def generative_text_features(self, text: torch.tensor, vision_features: torch.tensor):
+    def generative_text_features(self, text_embeds: torch.tensor, vision_features: torch.tensor):
         # Remember to toggle causal in forward pass
         # Remember to perform residual additions
-        output = text.clone()
+
+        attn_mask = torch.triu(torch.ones((text_embeddings.shape[1], text_embeddings.shape[1]))).bool() # Assuming shape[1] is the sequence dim
+        output = text_embeds.clone()
+        padding_mask = (text_embeds == 0).all(dim=-1)
         for i, layer in enumerate(self.text_decoder_layers):
             # Disable cross-attention for odd numbered layers
             if i % 2 != 0:
-                output = layer(output, vision_features=None, enable_cross_attn=False, causal_mask=True)
+                output = layer(output, vision_features=None, enable_cross_attn=False, causal_mask=True, attn_mask=attn_mask, padding_mask=padding_mask)
             else:
                 # enable cross-attention for even numbered layers
-                output = layer(output, vision_features=vision_features, enable_cross_attn=True, causal_mask=True)
+                output = layer(output, vision_features=vision_features, enable_cross_attn=True, causal_mask=True, attn_mask=attn_mask, padding_mask=padding_mask)
         return output
 
     
     def contrastive_loss(self, vision_features: torch.tensor, constrastive_text_features: torch.tensor):
         pass
     
-    def generative_loss(generative_text_features: torch.tensor, text: torch.tensor):
-        pass
-    
+    def generative_loss(generative_text_features: torch.tensor, text_labels: torch.tensor):
+        generative_text_features = generative_text_features.permute(0, -1, 1) # cross-entropy expects N x C as first two dims
+        loss = self.gen_loss_criterion(generative_text_features, text_labels, ignore_index=self.pad_token_id)
+        return loss
+
     def decoder_output_features_to_text_tokens(self, text_features: torch.tensor):
-        return self.decoder_output_features_to_text_tokens_layer(text_features)
+        return self.final_layernorm(self.decoder_output_features_to_text_tokens_layer(text_features))
         
     
-    def forward(self, image, text):
+    def forward(self, image, text, text_labels):
         # Pseudocode for now, need to fully implement and test
         # TODO: Implement average pooling over spatial dimension and sequence where appropriate
-        # TODO: Add tokenizer & params
+        # TODO: Add tokenizer & params ------- Tokenizer would be added in training pipeline
+        text_embeds = self.text_embeddings(text)
         vision_features = self.get_vision_features(image)
-        
         vision_features = self.img_feat_size_to_txt_feat_size(vision_features) # projects image feature dim to text feature dim
         
-        constrastive_text_features = self.constrastive_text_features(text)
-        
-        generative_text_features = self.generative_text_features(text, vision_features)
-        
+        constrastive_text_features = self.constrastive_text_features(text_embeds)
+        constrastive_text_features = self.latent_text_features(constrastive_text_features)
         contrastive_loss = self.contrastive_loss(vision_features, constrastive_text_features)
         
-        text_logits = self.decoder_output_features_to_text_tokens(generative_text_features)
         
-        generative_loss = self.generative_loss(text_logits, text)
+        generative_text_features = self.generative_text_features(text_embeds, vision_features)
+        text_logits = self.decoder_output_features_to_text_tokens(generative_text_features)
+        generative_loss = self.generative_loss(text_logits, text_labels)
         
         loss = self.contrastive_loss_weight * contrastive_loss + self.generative_loss_weight * generative_loss
         
