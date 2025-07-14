@@ -23,7 +23,9 @@ class MaMMUT(nn.Module):
                  text_decoder_feedforward_dim: int = 2048,
                  text_decoder_dk: int = 128,
                  vocab_size: int = 1000,
-                 latent_dim: int = 512):
+                 latent_dim: int = 512,
+                 contrastive_loss_temp: float = 0.5,
+                 contrastive_loss_gamma: float = 1.0):
         self.vit = VisionTransformer(
             image_size=image_size,
             patch_size=patch_size,
@@ -60,7 +62,9 @@ class MaMMUT(nn.Module):
         self.text_cls_token = nn.Parameter(torch.randn(text_decoder_embed_dim))
         self.contrastive_layernorm = nn.LayerNorm(text_decoder_embed_dim)
 
-        self.gen_loss_criterion = nn.CrossEntropyLoss()
+        self.loss_criterion = nn.CrossEntropyLoss()
+        self.contrastive_loss_temp = contrastive_loss_temp
+        self.contrastive_loss_gamma = contrastive_loss_gamma
         
         # Changing logic for the decoder layer. This way we can disable cross-attention during the forward pass and keep everything else the same
         for i in range(text_decoder_depth):
@@ -141,7 +145,7 @@ class MaMMUT(nn.Module):
         # Remember to pass bidirectional mask (as far as I understand, a mask that allows attention to all non-padded areas or maybe just all non-CLS areas and maybe stops cls from attending to padding TODO: Clarify)
         # Remember to perform residual additions         
         # expand to match dimensions
-        cls_tokens = self.cls_token.expand(text.embeds.shape[0], 1, self.text_decoder_embed_dim)
+        cls_tokens = self.cls_token.expand(text_embeds.shape[0], 1, self.text_decoder_embed_dim)
         # Add cls tokens to start of the sequences
         text_embeds = torch.cat([cls_tokens, text_embeds], dim=1)
         cls_padding_mask = (text_embeds == 0).all(dim=-1) # From nn.Embedding, padding tokens are embedded as vector of 0s. Result should be shape N x S.
@@ -173,11 +177,33 @@ class MaMMUT(nn.Module):
 
     
     def contrastive_loss(self, vision_features: torch.tensor, constrastive_text_features: torch.tensor):
-        pass
+        """Implement Focal-contrastive loss as in the paper"""
+        similarity = (vision_features @ text_features.T) / self.contrastive_loss_temp
+        # In contrastive learning we aim to minimize loss for between the matching image and text pairs, and maximize loss 
+        # for mismatching image text pairs.
+        # after the matrix multipication, shape will be N x N
+        # each row represents image i, and each column would represent each caption
+        # Therefore, the matching pairs will be across the diagonal (0,0), (1, 1) ... and we can treat this as a classification task
+        # where we compute the loss between the text_logits and its matching image and vice-versa for the image loss
     
+        # We can construct the labels by just creating a diagonal matrix
+        labels = torch.arange(similarity.shape[0], device=device)
+        labels_one_hot = F.one_hot(labels, num_classes=similarity.shape[0])
+
+        probs_imgs = F.softmax(similarity, dim=1) # using softmax instead of sigmoid
+        loss_i2t = ((1 - probs_imgs) ** self.contrastive_loss_gamma) * (torch.log(probs_imgs))
+
+        probs_texts = F.softmax(similarity, dim=0)
+        loss_t2i = ((1 - probs_texts) ** self.contrastive_loss_gamma) * (torch.log(probs_texts))
+
+        total_contrastive_loss = loss_i2t + loss_t2i
+
+        return total_contrastive_loss
+
+
     def generative_loss(generative_text_features: torch.tensor, text_labels: torch.tensor):
         generative_text_features = generative_text_features.permute(0, -1, 1) # cross-entropy expects N x C as first two dims
-        loss = self.gen_loss_criterion(generative_text_features, text_labels, ignore_index=self.pad_token_id)
+        loss = self.loss_criterion(generative_text_features, text_labels, ignore_index=self.pad_token_id)
         return loss
 
     def decoder_output_features_to_text_tokens(self, text_features: torch.tensor):
@@ -203,4 +229,4 @@ class MaMMUT(nn.Module):
         
         loss = self.contrastive_loss_weight * contrastive_loss + self.generative_loss_weight * generative_loss
         
-        return loss
+        return loss, contrastive_loss, generative_loss
