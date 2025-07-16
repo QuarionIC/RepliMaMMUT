@@ -38,7 +38,6 @@ class TextDecoderLayer(nn.Module):
         v1 = self.v(x)
 
         out = self.MHA_1(q1, k1, v1, is_causal=causal_mask, key_padding_mask=padding_mask, attn_mask=attn_mask)
-#         print(out.shape)
         out = self.layer_norm1(out[0] + x)
         out_layer_norm1 = torch.clone(out)
 
