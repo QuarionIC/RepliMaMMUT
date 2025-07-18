@@ -10,17 +10,17 @@ class MaMMUT(nn.Module):
     def __init__(self,
                  image_size: int = 224,
                  patch_size: int = 14,
-                 vit_num_layers: int = 32,
-                 vit_num_heads: int = 16,
-                 vit_hidden_dim: int = 1280,
-                 vit_mlp_dim: int = 5120,
+                 vit_num_layers: int = 8,
+                 vit_num_heads: int = 4,
+                 vit_hidden_dim: int = 512,
+                 vit_mlp_dim: int = 2048,
                  vit_dropout: float = 0.0, # Potential ablation / extension to add to the replication
                  vit_attention_dropout: float = 0.0, # Potential ablation / extension to add to the replication
                  contrastive_loss_weight: float = 1.0,
                  generative_loss_weight: float = 1.0,
-                 text_decoder_depth: int = 6,
-                 text_decoder_embed_dim: int = 512,
-                 text_decoder_sub_layer_heads: int = 8,
+                 text_decoder_depth: int = 4,
+                 text_decoder_embed_dim: int = 256,
+                 text_decoder_sub_layer_heads: int = 4,
                  text_decoder_feedforward_dim: int = 2048,
                  text_decoder_dk: int = 128,
                  vocab_size: int = 1000,
@@ -193,16 +193,18 @@ class MaMMUT(nn.Module):
     
         # We can construct the labels by just creating a diagonal matrix
         labels = torch.arange(similarity.shape[0]).to(self.device)
-        labels_one_hot = F.one_hot(labels, num_classes=similarity.shape[0]).to(self.device)
-        probs_imgs = F.softmax(similarity, dim=1) # using softmax instead of sigmoid
-        p_t_imgs = torch.sum(labels_one_hot * probs_imgs, dim=1)
-        p_t_imgs = torch.clamp(p_t_imgs, min=1e-5)
-        loss_i2t = -(((1 - p_t_imgs) ** self.contrastive_loss_gamma) * (torch.log(p_t_imgs))).mean()
-        probs_texts = F.softmax(similarity, dim=0)
-        p_t_texts = torch.sum(labels_one_hot * probs_texts, dim=1)
-        p_t_texts = torch.clamp(p_t_texts, min=1e-5)
+        # labels_one_hot = F.one_hot(labels, num_classes=similarity.shape[0]).to(self.device)
+        # probs_imgs = F.softmax(similarity, dim=1) # using softmax instead of sigmoid
+        # p_t_imgs = torch.sum(labels_one_hot * probs_imgs, dim=1)
+        # p_t_imgs = torch.clamp(p_t_imgs, min=1e-5)
+        # loss_i2t = -(((1 - p_t_imgs) ** self.contrastive_loss_gamma) * (torch.log(p_t_imgs))).mean()
+        # probs_texts = F.softmax(similarity, dim=0)
+        # p_t_texts = torch.sum(labels_one_hot * probs_texts, dim=1)
+        # p_t_texts = torch.clamp(p_t_texts, min=1e-5)
 
-        loss_t2i = -(((1 - p_t_texts) ** self.contrastive_loss_gamma) * (torch.log(p_t_texts))).mean()
+        # loss_t2i = -(((1 - p_t_texts) ** self.contrastive_loss_gamma) * (torch.log(p_t_texts))).mean()
+        loss_t2i = self.loss_criterion(similarity.T, labels)
+        loss_i2t = self.loss_criterion(similarity, labels)
         total_contrastive_loss = (loss_i2t + loss_t2i) / 2
 
         return total_contrastive_loss.to(self.device)
