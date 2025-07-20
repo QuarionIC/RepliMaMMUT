@@ -9,10 +9,10 @@ import torch.nn.functional as F
 class MaMMUT(nn.Module):
     def __init__(self,
                  image_size: int = 224,
-                 patch_size: int = 14,
+                 patch_size: int = 16,
                  vit_num_layers: int = 8,
-                 vit_num_heads: int = 4,
-                 vit_hidden_dim: int = 512,
+                 vit_num_heads: int = 8,
+                 vit_hidden_dim: int = 768,
                  vit_mlp_dim: int = 2048,
                  vit_dropout: float = 0.0, # Potential ablation / extension to add to the replication
                  vit_attention_dropout: float = 0.0, # Potential ablation / extension to add to the replication
@@ -75,11 +75,15 @@ class MaMMUT(nn.Module):
         
         
         # Changing logic for the decoder layer. This way we can disable cross-attention during the forward pass and keep everything else the same
-        for i in range(text_decoder_depth):
-            self.text_decoder_layers.append(TextDecoderLayer(d_model=text_decoder_embed_dim, num_heads_mha=text_decoder_sub_layer_heads, \
+        # for i in range(text_decoder_depth):
+        #     self.text_decoder_layers.append(TextDecoderLayer(d_model=text_decoder_embed_dim, num_heads_mha=text_decoder_sub_layer_heads, \
+        #                                                     num_heads_cross_attn=text_decoder_sub_layer_heads, d_feedforward=text_decoder_feedforward_dim, \
+        #                                                      d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // text_decoder_sub_layer_heads), vit_dim=vit_hidden_dim).to(self.device)
+        #                                                      )
+        self.text_decoder_layers = nn.ModuleList([TextDecoderLayer(d_model=text_decoder_embed_dim, num_heads_mha=text_decoder_sub_layer_heads, \
                                                             num_heads_cross_attn=text_decoder_sub_layer_heads, d_feedforward=text_decoder_feedforward_dim, \
                                                              d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // text_decoder_sub_layer_heads), vit_dim=vit_hidden_dim).to(self.device)
-                                                             )
+                                                              for _ in range(text_decoder_depth)])
         self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size) # for captioning loss
             
         
