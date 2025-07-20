@@ -238,7 +238,7 @@ class MaMMUT(nn.Module):
         contrastive_loss = self.contrastive_loss(vision_features_contrastive, constrastive_text_features)
         
         # Since task will be to generate next token, we only go up until the second last token
-        generative_text_features = self.generative_text_features(text_embeds[:, :-1], vision_features)
+        generative_text_features = self.generative_text_features(text_embeds[:, :-1], vision_features_contrastive)
 
         text_logits = self.decoder_output_features_to_text_tokens(generative_text_features)
 

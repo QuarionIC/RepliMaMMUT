@@ -23,7 +23,7 @@ class TextDecoderLayer(nn.Module):
         self.q_cross_attn = nn.Linear(d_model, d_model)
         self.v_cross_attn = nn.Linear(vit_dim, d_model)
 
-        self.cross_attn = nn.MultiheadAttention(d_model, num_heads_cross_attn, batch_first =True)
+        self.cross_attn = nn.MultiheadAttention(d_model, num_heads=num_heads_cross_attn, batch_first=True)
         self.layer_norm_cross_attn = nn.LayerNorm(d_model)
 
         self.fc1 = nn.Linear(d_model, d_feedforward)
@@ -33,19 +33,20 @@ class TextDecoderLayer(nn.Module):
 
     def forward(self, x, vision_features=None, enable_cross_attn=True, causal_mask=False, padding_mask=None, attn_mask=None):
         """Forward method for decoder layer with added option to disable cross attention and causal masking"""
-        k1 = self.k(x)
-        q1 = self.q(x)
-        v1 = self.v(x)
+        # k1 = self.k(x)
+        # q1 = self.q(x)
+        # v1 = self.v(x)
 
-        out = self.MHA_1(q1, k1, v1, is_causal=causal_mask, key_padding_mask=padding_mask, attn_mask=attn_mask)
+        out = self.MHA_1(query=x, key=x, value=x, is_causal=causal_mask, key_padding_mask=padding_mask, attn_mask=attn_mask)
         out = self.layer_norm1(out[0] + x)
         out_layer_norm1 = torch.clone(out)
 
         if enable_cross_attn:
-            k2 = self.k_cross_attn(vision_features)
-            q2 = self.q_cross_attn(x)
-            v2 = self.v_cross_attn(vision_features)
-            out = self.cross_attn(q2, k2, v2)
+            # k2 = self.k_cross_attn(vision_features)
+            # q2 = self.q_cross_attn(x)
+            # v2 = self.v_cross_attn(vision_features)
+            out = self.cross_attn(query=out, key=vision_features, value=vision_features)
+    
             out = self.layer_norm_cross_attn(out[0] + out_layer_norm1)
             out_layer_norm_cross_attn = torch.clone(out)
         
