@@ -68,7 +68,7 @@ class MaMMUT(nn.Module):
         self.contrastive_layernorm = nn.LayerNorm(text_decoder_embed_dim)
 
         self.loss_criterion = nn.CrossEntropyLoss(ignore_index=self.pad_token_id).to(self.device)
-        self.contrastive_loss_temp = contrastive_loss_temp
+        self.contrastive_loss_temp = nn.Parameter(torch.Tensor([1.]).to(self.device))
         self.contrastive_loss_gamma = contrastive_loss_gamma
         self.image_size = image_size
         self.patch_size = patch_size
@@ -186,8 +186,11 @@ class MaMMUT(nn.Module):
     
     def contrastive_loss(self, vision_features: torch.tensor, constrastive_text_features: torch.tensor):
         """Implement Focal-contrastive loss as in the paper"""
-        similarity = (vision_features @ constrastive_text_features.T) / self.contrastive_loss_temp
-        similarity = similarity.squeeze(1)
+        similarity = (vision_features @ constrastive_text_features.T) / 0.07
+        
+        similarity = similarity.view(similarity.shape[0], -1)
+        # print(similarity.shape)
+        # similarity = similarity.squeeze(1)
         # In contrastive learning we aim to minimize loss for between the matching image and text pairs, and maximize loss 
         # for mismatching image text pairs.
         # after the matrix multipication, shape will be N x N
