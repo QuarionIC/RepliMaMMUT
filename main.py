@@ -201,7 +201,6 @@ def train(model, data, val_data, lr=0.001, weight_decay=0.000001, num_epochs=20,
                 if i > 10:
                     break
             optimizer.step()
-            scheduler.step(total_loss)
             optimizer.zero_grad()
 
             

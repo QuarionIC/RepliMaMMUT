@@ -3,7 +3,7 @@ import torch.nn as nn
 from PIL import Image as PIL_Image
 from torchvision.models.vision_transformer import VisionTransformer
 from torchvision.transforms import v2
-from text_decoder import TextDecoderLayer
+from .text_decoder import TextDecoderLayer
 import torch.nn.functional as F
 
 class MaMMUT(nn.Module):
