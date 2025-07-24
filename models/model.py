@@ -26,10 +26,11 @@ class MaMMUT(nn.Module):
                  vocab_size: int = 1000,
                  latent_dim: int = 512,
                  contrastive_loss_temp: float = 0.5,
-                 contrastive_loss_gamma: float = 1.0):
+                 contrastive_loss_gamma: float = 1.0,
+                 device: int = 0):
                  
         super(MaMMUT, self).__init__()   
-        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        self.device = device if torch.cuda.is_available() else "cpu"
 
         self.vit = VisionTransformer(
             image_size=image_size,
@@ -67,8 +68,8 @@ class MaMMUT(nn.Module):
         self.text_cls_token = nn.Parameter(torch.randn(text_decoder_embed_dim))
         self.contrastive_layernorm = nn.LayerNorm(text_decoder_embed_dim)
 
-        self.loss_criterion = nn.CrossEntropyLoss(ignore_index=self.pad_token_id).to(self.device)
-        self.contrastive_loss_temp = nn.Parameter(torch.Tensor([1.]).to(self.device))
+        self.loss_criterion = nn.CrossEntropyLoss(ignore_index=self.pad_token_id)
+        self.contrastive_loss_temp = nn.Parameter(torch.Tensor([1.]))
         self.contrastive_loss_gamma = contrastive_loss_gamma
         self.image_size = image_size
         self.patch_size = patch_size
@@ -82,7 +83,7 @@ class MaMMUT(nn.Module):
         #                                                      )
         self.text_decoder_layers = nn.ModuleList([TextDecoderLayer(d_model=text_decoder_embed_dim, num_heads_mha=text_decoder_sub_layer_heads, \
                                                             num_heads_cross_attn=text_decoder_sub_layer_heads, d_feedforward=text_decoder_feedforward_dim, \
-                                                             d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // text_decoder_sub_layer_heads), vit_dim=vit_hidden_dim).to(self.device)
+                                                             d_k=text_decoder_dk, d_v=(text_decoder_embed_dim // text_decoder_sub_layer_heads), vit_dim=vit_hidden_dim)
                                                               for _ in range(text_decoder_depth)])
         self.decoder_output_features_to_text_tokens_layer = nn.Linear(self.text_decoder_embed_dim, self.token_size) # for captioning loss
             
@@ -153,7 +154,7 @@ class MaMMUT(nn.Module):
         # Remember to pass bidirectional mask (as far as I understand, a mask that allows attention to all non-padded areas or maybe just all non-CLS areas and maybe stops cls from attending to padding TODO: Clarify)
         # Remember to perform residual additions         
         # expand to match dimensions
-        cls_tokens = self.text_cls_token.expand(text_embeds.shape[0], 1, self.text_decoder_embed_dim).to(self.device)
+        cls_tokens = self.text_cls_token.expand(text_embeds.shape[0], 1, self.text_decoder_embed_dim)
         # Add cls tokens to start of the sequences
         text_embeds = torch.cat([cls_tokens, text_embeds], dim=1)
         cls_padding_mask = (text_embeds == 0).all(dim=-1) # From nn.Embedding, padding tokens are embedded as vector of 0s. Result should be shape N x S.
@@ -173,7 +174,7 @@ class MaMMUT(nn.Module):
 
         attn_mask = torch.triu(torch.ones((text_embeds.shape[1], text_embeds.shape[1])), diagonal=1).bool().to(self.device) # Assuming shape[1] is the sequence dim
         output = text_embeds.clone()
-        padding_mask = (text_embeds == 0).all(dim=-1)
+        padding_mask = (text_embeds == 0).all(dim=-1).to(self.device)
         for i, layer in enumerate(self.text_decoder_layers):
             # Disable cross-attention for odd numbered layers
             if i % 2 != 0:
@@ -188,7 +189,7 @@ class MaMMUT(nn.Module):
         """Implement Focal-contrastive loss as in the paper"""
         similarity = (vision_features @ constrastive_text_features.T) / 0.07
         
-        similarity = similarity.view(similarity.shape[0], -1)
+        similarity = similarity.view(similarity.shape[0], -1).to(self.device)
         # print(similarity.shape)
         # similarity = similarity.squeeze(1)
         # In contrastive learning we aim to minimize loss for between the matching image and text pairs, and maximize loss 
@@ -214,13 +215,13 @@ class MaMMUT(nn.Module):
         loss_i2t = self.loss_criterion(similarity, labels)
         total_contrastive_loss = (loss_i2t + loss_t2i) / 2
 
-        return total_contrastive_loss.to(self.device)
+        return total_contrastive_loss
 
 
     def generative_loss(self, generative_text_features: torch.tensor, text_labels: torch.tensor):
         generative_text_features = generative_text_features.permute(0, -1, 1) # cross-entropy expects N x C as first two dims
         loss = self.loss_criterion(generative_text_features, text_labels)
-        return loss.to(self.device)
+        return loss
 
     def decoder_output_features_to_text_tokens(self, text_features: torch.tensor):
         return self.final_layernorm(self.decoder_output_features_to_text_tokens_layer(text_features))
